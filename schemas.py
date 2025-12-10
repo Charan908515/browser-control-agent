@@ -4,7 +4,7 @@ import operator
 
 from dataclasses import field
 
-# your Attribute_Properties model (cleaned up)
+
 class Attribute_Properties(BaseModel):
     element_name: str = Field(..., description="The name of the requirement (e.g., 'Login Button').")
     playwright_selector: str = Field(..., description="The actual code snippet (e.g., \"page.getByRole('button', { name: 'Log In' })\").")
@@ -35,10 +35,8 @@ def build_attributes_model(
     default_value = ... if required else default_for_optional
 
     for fname in field_names:
-        # Each field is (type, default) as required by create_model
+        
         fields[fname] = (Attribute_Properties, default_value)
-
-    # Create the model. No validators or bases are attached here, but you can pass __base__ to inherit.
     DynamicModel = create_model(model_name, **fields)  # type: ignore
     return DynamicModel
 

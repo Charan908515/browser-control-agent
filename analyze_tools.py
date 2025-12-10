@@ -56,13 +56,14 @@ def extract_html_code():
 
 
 @tool
-def extract_and_analyze_selectors(requirements: list[str]):
+def extract_and_analyze_selectors(requirements: list[str], provider: str = None):
     """Extracts HTML code from current page and immediately analyzes it for selectors.
     This is a combined function that replaces the need to call extract_html_code() 
     followed by extract_selector_from_code().
     
     Args:
         requirements: List of UI elements to find selectors for (e.g., ["login button", "password field"])
+        provider: Optional LLM provider ("gemini", "groq", "sambanova", "ollama", or None for all)
     
     Returns:
         Structured selector information for the requested elements
@@ -79,34 +80,46 @@ def extract_and_analyze_selectors(requirements: list[str]):
             
         requirements_text = "\n".join(requirements)
         
-        # Use Main LLM from Config
-        llm = LLMConfig.get_main_llm()
-            
-        try:
-            clean_response = {}
-            print(f"Attempting selector extraction with Main LLM")
-            
-            prompt = get_code_analysis_prompt(requirements_text, html_code)
-            
-            # Use structured output if valid for the model, otherwise strict parsing
-            structured_llm = llm.with_structured_output(build_attributes_model("Element_Properties", requirements))
-            response = structured_llm.invoke(prompt)
-            
-            print(f"Successfully extracted selectors")
-            for key, val in response.dict().items():
-                sel = val.get('playwright_selector', '')
-                if "sample" in sel.lower() or len(sel) < 2:
-                    print(f"Bad selector for {key}, attempting generic fallback")
-                    clean_response[key] = f"text={key}" # Fallback to text match
-                else:
-                    clean_response[key] = val
         
-            return clean_response
+        llm_rotation = LLMConfig.get_main_llm_with_rotation(0, provider=provider)
+        
+        
+        for idx, (model_name, llm) in enumerate(llm_rotation):
+            try:
+                print(f"\n>>> extract_and_analyze_selectors trying {model_name}...")
+                
+                prompt = get_code_analysis_prompt(requirements_text, html_code)
+                
+                
+                structured_llm = llm.with_structured_output(build_attributes_model("Element_Properties", requirements))
+                response = structured_llm.invoke(prompt)
+                
+                print(f">>> Successfully extracted selectors with {model_name}")
+                
+                clean_response = {}
+                for key, val in response.dict().items():
+                    sel = val.get('playwright_selector', '')
+                    if "sample" in sel.lower() or len(sel) < 2:
+                        print(f"Bad selector for {key}, attempting generic fallback")
+                        clean_response[key] = f"text={key}" 
+                    else:
+                        clean_response[key] = val
             
-        except Exception as e:
-            error_str = str(e).lower()
-            print(f"Error in selector extraction: {error_str}")
-            return {"error": f"Extraction failed: {str(e)}"}
+                return clean_response
+                
+            except Exception as e:
+                error_str = str(e).lower()
+                
+                
+                if "429" in error_str or "rate limit" in error_str or "quota" in error_str or "resource_exhausted" in error_str:
+                    print(f">>>  Rate limit hit on {model_name}, rotating to next key...")
+                    continue  
+                else:
+                    print(f">>> Error in selector extraction: {error_str}")
+                    return {"error": f"Extraction failed: {str(e)}"}
+        
+      
+        return {"error": "All API keys exhausted due to rate limits"}
         
     except Exception as e:
         error = f"Error in extract_and_analyze_selectors: {str(e)}"
@@ -129,26 +142,25 @@ def analyze_using_vision(requirements: list[str], analysis_type: Optional[Litera
     screenshot_paths = []
     
     try:
-        # Take 5 screenshots with scrolling
+        
         for i in range(5):
             path = f"screenshot_{i}.png"
             page.screenshot(path=path)
             screenshot_paths.append(path)
             
-            # Scroll down one viewport height
             page.evaluate("window.scrollBy(0, window.innerHeight)")
-            time.sleep(1) # Wait for scroll and render
+            time.sleep(1) 
             
     except Exception as e:
         print(f"Error extracting screenshots: {str(e)}")
-        # Cleanup any taken screenshots
+        
         for p in screenshot_paths:
             if os.path.exists(p):
                 try: os.remove(p)
                 except: pass
         return {"error": f"Screenshot error: {str(e)}"}
     
-    # Prepare images for LLM
+    
     image_contents = []
     try:
         for path in screenshot_paths:
@@ -167,44 +179,57 @@ def analyze_using_vision(requirements: list[str], analysis_type: Optional[Litera
                 except: pass
         return {"error": f"Encoding error: {str(e)}"}
     finally:
-        # Cleanup screenshots immediately after reading
         for p in screenshot_paths:
             if os.path.exists(p):
                 try: os.remove(p)
                 except: pass
 
-    # Prepare Prompt
-    img_width, img_height = 1920, 1080 # Default/Assuming full HD for context, actual dims sent in image
+    
+    img_width, img_height = 1920, 1080 
     requirements_text = "\n".join(requirements)
     prompt = get_vision_analysis_prompt(requirements_text, img_width, img_height, analysis_type)
     prompt += "\n\nNote: You are provided with 5 sequential screenshots of the page, scrolling down from top to bottom. Use all of them to find the requested elements."
 
-    # Initial scroll back to top is polite
+    
     try:
         page.evaluate("window.scrollTo(0, 0)")
     except: pass
 
-    # Use Vision LLM from Config
-    llm = LLMConfig.get_vision_llm()
     
-    try:
-        # message format: text prompt + N images
-        content_block = [{"type": "text", "text": prompt}] + image_contents
-        
-        messages = [
-            {"role": "user", "content": content_block},
-        ]
-        
-        print(f"Attempting vision analysis with configured model...")
-        response = llm.invoke(messages)
-        json_response = extract_json_from_markdown(response.content)
-        
-        print(f"Successfully analyzed vision")
-        return json_response
-        
-    except Exception as e:
-        print(f"Error in vision analysis: {str(e)}")
-        return {"error": f"Vision analysis failed: {str(e)}"}
+    llm_rotation = LLMConfig.get_vision_llm_with_rotation(0)
+    
+    
+    for idx, (model_name, llm) in enumerate(llm_rotation):
+        try:
+            print(f"\n>>> analyze_using_vision trying {model_name}...")
+            
+            # message format: text prompt + N images
+            content_block = [{"type": "text", "text": prompt}] + image_contents
+            
+            messages = [
+                {"role": "user", "content": content_block},
+            ]
+            
+            response = llm.invoke(messages)
+            json_response = extract_json_from_markdown(response.content)
+            
+            print(f">>>  Successfully analyzed vision with {model_name}")
+            return json_response
+            
+        except Exception as e:
+            error_str = str(e).lower()
+            
+         
+            if "429" in error_str or "rate limit" in error_str or "quota" in error_str or "resource_exhausted" in error_str:
+                print(f">>> ⚠ Rate limit hit on {model_name}, rotating to next key...")
+                continue  
+            else:
+                
+                print(f">>> Error in vision analysis: {str(e)}")
+                return {"error": f"Vision analysis failed: {str(e)}"}
+    
+    
+    return {"error": "All vision API keys exhausted due to rate limits"}
 
 def extract_page_content_as_markdown() -> str:
     """
@@ -214,7 +239,7 @@ def extract_page_content_as_markdown() -> str:
     if not page: return "Error: No page open"
 
     try:
-        # Check for readability script or use simple custom parser
+        
         markdown = page.evaluate("""
             () => {
                 function isVisible(el) {
@@ -292,29 +317,30 @@ def extract_page_content_as_markdown() -> str:
             }
         """)
         
-        # Limit size to prevent token overflow (e.g., 40k chars)
+        
         return markdown[:40000] 
 
     except Exception as e:
         return f"Error extracting markdown: {e}"
 
 @tool
-def scrape_data_using_text(requirements: str):
+def scrape_data_using_text(requirements: str, provider: str = None):
     """
     Scrapes structured data (JSON) from the page using text analysis.
     FAST & CHEAP alternative to Vision.
     
     Args:
         requirements: What to extract (e.g. "list of products with name, price, and url")
+        provider: Optional LLM provider ("gemini", "groq", "sambanova", "ollama", or None for all)
     """
-    # 1. Get the content (Text + Links)
+   
     content = extract_page_content_as_markdown()
     
     if "Error" in content:
         return {"error": content}
 
-    # 2. Ask Main LLM to parse it
-    llm = LLMConfig.get_main_llm()
+    
+    llm_rotation = LLMConfig.get_main_llm_with_rotation(0, provider=provider)
 
     prompt = f"""
     You are a Data Extraction Agent.
@@ -339,14 +365,34 @@ def scrape_data_using_text(requirements: str):
     }}
     """
     
-    try:
-        response = llm.invoke(prompt)
-        return extract_json_from_markdown(response.content)
-    except Exception as e:
-        return {"error": f"LLM Extraction failed: {e}"}
+    
+    for idx, (model_name, llm) in enumerate(llm_rotation):
+        try:
+            print(f"\n>>> scrape_data_using_text trying {model_name}...")
+            
+            response = llm.invoke(prompt)
+            result = extract_json_from_markdown(response.content)
+            
+            print(f">>>  Successfully scraped data with {model_name}")
+            return result
+            
+        except Exception as e:
+            error_str = str(e).lower()
+            
+            
+            if "429" in error_str or "rate limit" in error_str or "quota" in error_str or "resource_exhausted" in error_str:
+                print(f">>>  Rate limit hit on {model_name}, rotating to next key...")
+                continue  
+            else:
+                
+                print(f">>> LLM Extraction failed: {e}")
+                return {"error": f"LLM Extraction failed: {e}"}
+    
+    # All keys exhausted
+    return {"error": "All API keys exhausted due to rate limits"}
 
 if __name__ == "__main__":
-    # Example usage
+    
     browser_manager.start_browser("https://www.naukri.com/","naukri")
     requirements = ["login button", "register button"]
     

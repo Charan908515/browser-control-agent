@@ -48,7 +48,7 @@ import nest_asyncio
 import sys
 import asyncio
 
-# FIX: Enforce ProactorEventLoop on Windows for Playwright
+
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
@@ -58,14 +58,14 @@ dotenv.load_dotenv()
 
 def extract_json_from_markdown(text: str) -> str:
     """Extract JSON from markdown code blocks like ```json ... ```"""
-    # Try to find JSON in markdown code blocks
+    
     pattern = r'```(?:json)?\s*\n?(.*?)\n?```'
     match = re.search(pattern, text, re.DOTALL)
     
     if match:
         return match.group(1).strip()
     
-    # If no markdown blocks found, return the original text
+    
     return text.strip()
 
 
@@ -76,15 +76,14 @@ def get_current_browser_info():
     """
     page = browser_manager.get_page()
     
-    # Check if browser is actually open and valid
     if page and not page.is_closed():
         try:
             current_url = page.url
-            # Extract domain (e.g., "https://www.google.com/..." -> "google.com")
+            
             parsed = urlparse(current_url)
             site_name = parsed.netloc.replace("www.", "")
             
-            # If local file or empty
+            
             if not site_name: 
                 site_name = "local_or_unknown"
                 
@@ -96,38 +95,31 @@ def get_current_browser_info():
 
 def central_agent1(state):
     user_input = state["user_input"]
-    # Sanitize input
+  
     user_input = user_input.replace("{", "{{").replace("}", "}}")
     
     site_names = state.get("site_names", [])
     urls = state.get("urls", [])
     
-    # current_plan holds the state from the PREVIOUS run (or empty if fresh)
+   
     current_plan = state.get("plan", [])
     
-    # step_index is crucial: 
-    # - If Redirector sends 0 and we have data, it's a "New Phase".
-    # - If step_index > 0, it might be an error or continuation.
     current_index = state.get("step_index", 0)
     
     last_error = state.get("last_error", None)
     
     print(f">>> PLANNING AGENT: Step Index: {current_index}")
-    
-    # --- 1. MEMORY & CONTEXT PREPARATION ---
-    
-    # Retrieve general RAG errors (historical knowledge)
+   
     if not site_names:
         historical_errors = "No previous errors"
     else:
         historical_errors = retrieve_errors(state) if vector_db else "No previous errors"
     historical_errors = historical_errors.replace("{", "{{").replace("}", "}}")
 
-    # Get Browser State (Grounding)
+   
     print(">>> Planner is scanning the page...")
     if browser_manager.get_page():
         try:
-            # First 1000 chars to identify Page State
             raw_text = browser_manager.get_page().evaluate("document.body.innerText")[:1000]
             current_page_state = f"Page Title: {browser_manager.get_page().title()}\nVisible Text Snippet: {raw_text}..."
         except:
@@ -136,34 +128,31 @@ def central_agent1(state):
         current_page_state = "Browser is NOT open. First step must be 'Open Browser'."
     current_page_state = current_page_state.replace("{", "{{").replace("}", "}}")
 
-    # Initialize Context Variables
-    completed_steps = []          # The steps we will KEEP in the final plan
-    completed_context_str = ""    # The text description of history for the LLM
-    extracted_data_context = ""   # Data found so far
+   
+    completed_steps = []      
+    completed_context_str = ""    
+    extracted_data_context = ""   
     immediate_error_context = ""
     
     parser = JsonOutputParser(pydantic_object=SupervisorOutput)
     instructions = parser.get_format_instructions().replace("{", "{{").replace("}", "}}")
 
-    # --- 2. DETERMINE PLANNING MODE ---
-
-    # MODE A: PHASE 2 / RE-PLANNING (Data exists + Redirector reset index to 0)
-    # This happens when the Redirector sees "PLANNER" step or finishes a loop and sends us back.
+   
     if state.get("output_content") and current_index == 0:
         print(">>> PLANNER MODE: PHASE 2 (Data Driven Re-planning)")
         
-        # 1. Build History String from the OLD plan (Phase 1)
+        
         if current_plan:
             completed_context_str = "\n### COMPLETED HISTORY (PHASE 1):\n"
             for step in current_plan:
                 completed_context_str += f"✓ Step {step['step_number']}: {step['query']} (Agent: {step['agent']})\n"
         completed_context_str = completed_context_str.replace("{", "{{").replace("}", "}}")
-        # 2. Prepare Data Context
-        recent_data = state["output_content"][-2:] # Last 2 items to save tokens
+        
+        recent_data = state["output_content"][-2:]
         extracted_data_context = f"\n### DATA EXTRACTED SO FAR (Use this to plan Phase 2):\n{str(recent_data)}\n"
         extracted_data_context = extracted_data_context.replace("{", "{{").replace("}", "}}")
         
-        # 3. Reset Steps (We want a FRESH plan for Phase 2, not to append to Phase 1)
+       
         completed_steps = [] 
 
         system_message = f"""
@@ -190,17 +179,14 @@ def central_agent1(state):
                     {instructions}
                     """
         
-
-    # MODE B: ERROR RECOVERY (Something failed mid-execution)
     elif last_error:
         print(f">>> PLANNER MODE: ERROR RECOVERY (Step {current_index} Failed)")
         
-        # 1. Keep successful steps
         if current_plan:
             completed_steps = current_plan[:current_index]
             print(f">>> RETAINING {len(completed_steps)} SUCCESSFUL STEPS.")
         
-        # 2. Build Context
+       
         completed_context_str = "\nTHE FOLLOWING STEPS ARE ALREADY COMPLETED. DO NOT RE-PLAN THEM:\n"
         for step in completed_steps:
             completed_context_str += f"- Step {step['step_number']}: {step['query']}\n"
@@ -235,18 +221,14 @@ THE CURRENT PAGE STATE IS:
 {instructions}
 """
 
-    # MODE C: FRESH START (First run)
+    
     else:
         print(">>> PLANNER MODE: FRESH START")
         completed_steps = []
         system_message = get_central_agent_prompt5(user_input, historical_errors, instructions)
-
-
-    # --- 3. LLM EXECUTION ---
-    
-    # Configure LLMs (Primary & Fallback)
-    llm = LLMConfig.get_main_llm()
-    
+    start_index = state.get("current_model_index", 0)
+    provider = state.get("llm_provider", None) 
+    llm_rotation = LLMConfig.get_main_llm_with_rotation(start_index, provider=provider)
     
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_message),
@@ -258,17 +240,7 @@ THE CURRENT PAGE STATE IS:
     tavily = TavilySearchResults(tavily_api_key="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")
     tools = [tavily, close_browser]
 
-    agent = create_tool_calling_agent(llm, tools, prompt)
-    executor = AgentExecutor(
-        agent=agent,
-        tools=tools,
-        verbose=True,
-        max_iterations=30,
-        handle_parsing_errors=True,
-        return_intermediate_steps=True
-    )
 
-    # Sanitize History for LLM
     sanitized_history = []
     for msg in state["messages"]:
         sanitized_content = msg.content.replace("{", "{{").replace("}", "}}")
@@ -277,53 +249,94 @@ THE CURRENT PAGE STATE IS:
         else:
             sanitized_history.append(HumanMessage(content=sanitized_content))
 
-    try:
-        response = executor.invoke({"chat_history": sanitized_history})
-        clean_json = extract_json_from_markdown(response["output"])
-        result = json.loads(clean_json)
+    last_error = None
+    for idx, (model_name, current_llm) in enumerate(llm_rotation):
+        try:
+            print(f"\n>>> Central Agent trying {model_name} (index {start_index + idx})...")
+            
+            agent = create_tool_calling_agent(current_llm, tools, prompt)
+            executor = AgentExecutor(
+                agent=agent,
+                tools=tools,
+                verbose=True,
+                max_iterations=30,
+                handle_parsing_errors=True,
+                return_intermediate_steps=True
+            )
+
+            response = executor.invoke({"chat_history": sanitized_history})
+            
         
-        detected_urls = result.get("target_urls", [])
-        detected_sites = result.get("site_names", [])
-        new_steps = result.get("steps", result) if isinstance(result, dict) else result
+            successful_index = (start_index + idx) % len(llm_rotation)
+            print(f">>> ✓ Success with {model_name}")
+            
         
-        if not isinstance(new_steps, list):
-            new_steps = []
+            clean_json = extract_json_from_markdown(response["output"])
+            result = json.loads(clean_json)
+            
+            detected_urls = result.get("target_urls", [])
+            detected_sites = result.get("site_names", [])
+            new_steps = result.get("steps", result) if isinstance(result, dict) else result
+            
+            if not isinstance(new_steps, list):
+                new_steps = []
 
-        # RAG: Save Error Resolution if applicable
-        if last_error and vector_db and len(new_steps) > 0:
-            try:
-                url, site_name = get_current_browser_info()
-                fix_action = new_steps[0].get('query', 'Unknown Action')
-                rag_content = f"Error Encountered: {last_error}\nSuccessful Fix/Next Step: {fix_action}"
-                doc = Document(
-                    page_content=rag_content,
-                    metadata={
-                        "url": url, "site_name": site_name,
-                        "type": "error_resolution", "related_step_index": current_index
-                    }
-                )
-                vector_db.add_documents([doc])
-                print(f">>> SAVED ERROR & SOLUTION TO RAG")
-            except Exception as e:
-                print(f"RAG Save Failed: {e}")
+            
+            if state.get("last_error") and vector_db and len(new_steps) > 0:
+                try:
+                    url, site_name = get_current_browser_info()
+                    fix_action = new_steps[0].get('query', 'Unknown Action')
+                    rag_content = f"Error Encountered: {state.get('last_error')}\\nSuccessful Fix/Next Step: {fix_action}"
+                    doc = Document(
+                        page_content=rag_content,
+                        metadata={
+                            "url": url, "site_name": site_name,
+                            "type": "error_resolution", "related_step_index": current_index
+                        }
+                    )
+                    vector_db.add_documents([doc])
+                    print(f">>> SAVED ERROR & SOLUTION TO RAG")
+                except Exception as e:
+                    print(f"RAG Save Failed: {e}")
 
-        # --- 4. MERGE PLANS ---
-        # If Phase 2: completed_steps is [], so final_plan = new_steps. (Correct: We overwrite old plan)
-        # If Error: completed_steps is [0..X], so final_plan = [0..X] + new_steps. (Correct: We append)
-        final_plan = completed_steps + new_steps
         
-        for i, step in enumerate(final_plan):
-            step['step_number'] = i + 1
+            final_plan = completed_steps + new_steps
+            
+            for i, step in enumerate(final_plan):
+                step['step_number'] = i + 1
 
-        print(f">>> PLAN GENERATED. New Steps: {len(new_steps)}, Total Steps: {len(final_plan)}")
+            print(f">>> PLAN GENERATED. New Steps: {len(new_steps)}, Total Steps: {len(final_plan)}")
+            
+            return {
+                "plan": final_plan,
+                "step_index": len(completed_steps),
+                "last_error": None, 
+                "urls": detected_urls,
+                "site_names": detected_sites,
+                "current_model_index": successful_index,
+                "messages": [HumanMessage(content=f"[Planner]: Plan updated. Phase steps: {len(new_steps)}.")]
+            }
+            
+        except Exception as e:
+            error_str = str(e).lower()
+            last_error = str(e)
+            
+        
+            if "429" in error_str or "rate limit" in error_str or "quota" in error_str or "resource_exhausted" in error_str:
+                print(f">>>  Rate limit hit on {model_name}, rotating to next key...")
+                continue  
+            else:
+               
+                print(f">>>  Planning Error (non-rate-limit): {e}")
+                break
 
-    except Exception as e:
-        print(f"Planning Logic Error: {e}")
-        final_plan = current_plan # Fallback to existing plan on crash
+    
+    print(f">>> All API keys exhausted or planning failed. Last error: {last_error}")
+    final_plan = current_plan  
 
     return {
         "plan": final_plan,
-        "step_index": len(completed_steps), # Start at 0 for Phase 2, or at failure point for Error
+        "step_index": len(completed_steps),
         "last_error": None, 
         "urls": detected_urls,
         "site_names": detected_sites,
@@ -349,19 +362,16 @@ def redirector(state):
     if step["agent"] == "PLANNER":
         print(">>> Step is 'PLANNER'. Resetting plan and sending back to Architect.")
         
-        # 1. We keep 'output_content' and 'messages' so the Planner knows history.
-        # 2. We RESET 'plan' to empty so the Planner can write a NEW list.
-        # 3. We RESET 'step_index' to 0 for the new plan.
         return Command(
             update={
                 "step_index": 0,    
-                # Optional: Add a message to help the planner focus
+                
                 "messages": [HumanMessage(content="Phase 1 complete. Data extracted. Please plan Phase 2.")]
             },
             goto="planner"
         )
     elif step["agent"]=="RAG":
-        # Use rag_message if available, otherwise fall back to query
+    
         message_content = step["rag_message"] or step["query"]
         new_msg = HumanMessage(content=message_content)
         
@@ -390,23 +400,19 @@ def execution_agent(state):
     task = task_msg.content if hasattr(task_msg, 'content') else str(task_msg)
     task=task.replace("{", "{{").replace("}", "}}")
     sanitized_history = []
-    for msg in state["execution_messages"][:-1]: # Exclude the current task
+    for msg in state["execution_messages"][:-1]: 
         if isinstance(msg, HumanMessage) or isinstance(msg, AIMessage):
             sanitized_history.append(msg)
         else:
-            # Convert generic BaseMessage or others to HumanMessage
             sanitized_history.append(HumanMessage(content=str(msg.content)))
-            
-    # USE CONFIG
-    llm = LLMConfig.get_main_llm()
     
     tavily = TavilySearchResults(tavily_api_key="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")
     tools = [
         tavily,
-        enable_vision_overlay, # The "Scanner"
-        find_element_ids,      # The "Search Engine"
-        click_id,              # The "Finger"
-        fill_id,               # The "Keyboard"
+        enable_vision_overlay,
+        find_element_ids,      
+        click_id,             
+        fill_id,              
         scroll_one_screen,
         press_key,
         get_page_text,
@@ -422,121 +428,170 @@ def execution_agent(state):
         open_dropdown_and_select
     ]
     
-    # Use Gemini for execution (it supports tool calling)
-    agent = create_tool_calling_agent(llm, tools, get_autonomous_browser_prompt4())
-    agent_executor = AgentExecutor(
-        agent=agent,
-        tools=tools,
-        verbose=True,
-        max_iterations=30,
-        handle_parsing_errors=True,
-        return_intermediate_steps=True
-    )
+    
+    
+    start_index = state.get("current_model_index", 0)
+    provider = state.get("llm_provider", None)
+    llm_rotation = LLMConfig.get_main_llm_with_rotation(start_index, provider=provider)
+    
+    
+    last_error = None
+    for idx, (model_name, current_llm) in enumerate(llm_rotation):
+        try:
+            print(f"\n>>> Execution Agent trying {model_name} (index {start_index + idx})...")
+            
+            agent = create_tool_calling_agent(current_llm, tools, get_autonomous_browser_prompt4())
+            agent_executor = AgentExecutor(
+                agent=agent,
+                tools=tools,
+                verbose=True,
+                max_iterations=30,
+                handle_parsing_errors=True,
+                return_intermediate_steps=True
+            )
 
-    try:
-        print(f">>> Starting  Execution Agent Task {state['step_index']}...")
-        result = agent_executor.invoke({"input": task,"chat_history":[]})
-        output_text = result["output"]
-        print("\n>>> FINAL OUTPUT:")
-        output_lower = output_text.lower()
-        trigger_word = next((w for w in ["unable", "error", "couldn't", "failed","execution failed"] if w in output_lower), None)
+            print(f">>> Starting Execution Agent Task {state['step_index']}...")
+            result = agent_executor.invoke({"input": task,"chat_history":[]})
+            
         
-        if trigger_word:
-            if "no error" not in output_lower:
-                print(f"\n>>> Execution Agent Error: Detected potential failure keyword '{trigger_word}'")
+            successful_index = (start_index + idx) % len(llm_rotation)
+            print(f">>> ✓ Success with {model_name}")
+            
+            output_text = result["output"]
+            print("\n>>> FINAL OUTPUT:")
+            output_lower = output_text.lower()
+            trigger_word = next((w for w in ["unable", "error", "couldn't", "failed","execution failed"] if w in output_lower), None)
+            
+            if trigger_word:
+                if "no error" not in output_lower:
+                    print(f"\n>>> Execution Agent Error: Detected potential failure keyword '{trigger_word}'")
+                    return Command(
+                        update={"last_error": output_text, "current_model_index": successful_index},
+                        goto="planner"
+                    )
+            new_msg = ChatMessage(role="execution_agent", content=output_text)
+            
+            update_dict = {"execution_messages": [new_msg],"messages": [new_msg], "current_model_index": successful_index}
+            extracted_data = []
+            
+            
+            if "intermediate_steps" in result:
+                for action, observation in result["intermediate_steps"]:
+                    
+                    if action.tool in ["scrape_data_using_text", "analyze_using_vision", "extract_and_analyze_selectors"]:
+                        
+                        content = json.dumps(observation) if isinstance(observation, (dict, list)) else str(observation)
+                        extracted_data.append(content)
+
+            
+            if not extracted_data and len(output_text) > 20 and ("{" in output_text or "[" in output_text):
+                extracted_data = [output_text]
+
+            if extracted_data:
+                update_dict["output_content"] = extracted_data
+
+            return Command(update=update_dict, goto="redirector")
+            
+        except Exception as e:
+            error_str = str(e).lower()
+            last_error = str(e)
+            
+        
+            if "429" in error_str or "rate limit" in error_str or "quota" in error_str or "resource_exhausted" in error_str:
+                print(f">>> Rate limit hit on {model_name}, rotating to next key...")
+                continue  
+            else:
+                
+                error_msg = f"AGENT CRASHED: {str(e)}"
+                print(f"\n>>> {error_msg}")
+                new_msg = ChatMessage(role="execution_agent", content=error_msg)
+                
                 return Command(
-                    update={"last_error": output_text},
+                    update={
+                        "execution_messages": [new_msg], 
+                        "messages": [new_msg],
+                        "step_index": state["step_index"], 
+                        "last_error": error_msg 
+                    },
                     goto="planner"
                 )
-        new_msg = ChatMessage(role="execution_agent", content=output_text)
-        
-        update_dict = {"execution_messages": [new_msg],"messages": [new_msg]}
-        extracted_data = []
-        
-        # 1. Check Intermediate Steps for raw tool outputs (The Fix)
-        if "intermediate_steps" in result:
-            for action, observation in result["intermediate_steps"]:
-                # Capture data from specific extraction tools
-                if action.tool in ["scrape_data_using_text", "analyze_using_vision", "extract_and_analyze_selectors"]:
-                    # Ensure observation is a string for the message history
-                    content = json.dumps(observation) if isinstance(observation, (dict, list)) else str(observation)
-                    extracted_data.append(content)
-
-        # 2. Fallback: If tools didn't return data, check the final text
-        if not extracted_data and len(output_text) > 20 and ("{" in output_text or "[" in output_text):
-            extracted_data = [output_text]
-
-        if extracted_data:
-            update_dict["output_content"] = extracted_data
-
     
 
-        return Command(update=update_dict, goto="redirector")
-        
-    except Exception as e:
-        error_str = str(e).lower()
-        
-        # --- NEW LOGIC: CRITICAL EXIT ON RATE LIMIT ---
-        if "429" in error_str or "rate limit" in error_str or "quota" in error_str:
-            print(f"\n>>> 🛑 CRITICAL TERMINATION: Rate Limit/Quota Exceeded. Stopping Agent.\nError: {str(e)}")
-            
-            # Send a final message explaining why it stopped
-            final_msg = ChatMessage(
-                role="execution_agent", 
-                content=f"Workflow Terminated: API Rate Limit (429) or Quota Exceeded."
-            )
-            
-            return Command(
-                update={
-                    "messages": [final_msg],
-                    "last_error": f"CRITICAL 429: {str(e)}"
-                },
-                goto=END  # <--- EXITS THE GRAPH IMMEDIATELY
-            )
-        # ----------------------------------------------
+    print(f"\n>>> ALL API KEYS EXHAUSTED. Last error: {last_error}")
+    final_msg = ChatMessage(
+        role="execution_agent", 
+        content=f"All API keys exhausted due to rate limits. Last error: {last_error}"
+    )
+    
+    return Command(
+        update={
+            "messages": [final_msg],
+            "last_error": f"ALL KEYS EXHAUSTED: {last_error}"
+        },
+        goto=END
+    )
 
-        # Standard error handling (send back to Planner for retry)
-        error_msg = f"AGENT CRASHED: {str(e)}"
-        print(f"\n>>> {error_msg}")
-        new_msg = ChatMessage(role="execution_agent", content=error_msg)
-        
-        return Command(
-            update={
-                "execution_messages": [new_msg], 
-                "messages": [new_msg],
-                "step_index": state["step_index"], 
-                "last_error": error_msg 
-            },
-            goto="planner"
-        )
 
 
 
 
 def output_formatting_agent(state):
     print(">>> OUTPUT FORMATTING AGENT")
-    # Define LLM inside the function since it wasn't defined globally or passed in
-    llm = LLMConfig.get_main_llm()
+    
     input_message=state["output_agent_messages"][-1]
     if hasattr(input_message, 'content'):
         input_message=input_message.content
     else:
         input_message=str(input_message)
     content_to_format = state["output_content"] if state["output_content"] else "No content to format."
+    
     prompt = ChatPromptTemplate.from_messages([
         ("system", "You are a data extraction specialist. \nINSTRUCTIONS:\n{instructions}"),
         ("human", "RAW DATA:\n{data}")
     ])
     
-    chain = prompt |llm
-    result = chain.invoke({"instructions": input_message, "data": content_to_format})
-    formatted_output = result.content
-
-    print(f">>> Formatted Output: {formatted_output[:100]}...")
     
+    
+    start_index = state.get("current_model_index", 0)
+    provider = state.get("llm_provider", None)
+    llm_rotation = LLMConfig.get_main_llm_with_rotation(start_index, provider=provider)
+    
+    last_error = None
+    for idx, (model_name, current_llm) in enumerate(llm_rotation):
+        try:
+            print(f"\n>>> Output Formatting trying {model_name} (index {start_index + idx})...")
+            
+            chain = prompt | current_llm
+            result = chain.invoke({"instructions": input_message, "data": content_to_format})
+            formatted_output = result.content
+    
+            successful_index = (start_index + idx) % len(llm_rotation)
+            print(f">>> ✓ Success with {model_name}")
+            print(f">>> Formatted Output: {formatted_output[:100]}...")
+            
+            return Command(
+                update={"Output": formatted_output, "current_model_index": successful_index}, 
+                goto="redirector"
+            )
+            
+        except Exception as e:
+            error_str = str(e).lower()
+            last_error = str(e)
+            
+        
+            if "429" in error_str or "rate limit" in error_str or "quota" in error_str or "resource_exhausted" in error_str:
+                print(f">>> Rate limit hit on {model_name}, rotating to next key...")
+                continue  
+            else:
+                
+                print(f">>> ✗ Formatting Error: {e}")
+                break
+    
+    
+    print(f">>> Formatting failed. Last error: {last_error}")
     return Command(
-        update={"Output": formatted_output}, 
-        goto="redirector" # Go back to redirector to finish or do next step
+        update={"Output": f"Formatting failed: {last_error}"}, 
+        goto="redirector"
     )
 
 
@@ -582,14 +637,14 @@ def rag(state):
     )
     vector_db.add_documents([doc])
     
-    # Return Command to control flow and avoid parallel execution
+    
     return Command(
         update={"messages": [ChatMessage(role="RAG Agent", content=f"Memory Saved: '{rag_content[:50]}...'")]},
         goto="redirector"
     )
 
 def retrieve_errors(state):
-    # --- NEW LOGIC ---
+    
     current_sites = state.get("site_names", [])
     if not current_sites:
         return "No specific sites identified yet."
@@ -632,7 +687,9 @@ class AgentState(MessagesState):
     output_agent_messages: Annotated[List[BaseMessage], operator.add]
     output_content: Annotated[List[str], operator.add]
     Output: str
-    last_error:Optional[str]=None
+    last_error: Optional[str] = None
+    current_model_index: int = 0  # Track rotation index
+    llm_provider: Optional[str] = None  # Optional provider filter ("gemini", "groq", "sambanova", "ollama")
 def create_agent():
     workflow=StateGraph(AgentState)
     workflow.add_node("planner",central_agent1)
@@ -666,7 +723,8 @@ def run_agent(input_str:str):
     "rag_messages": [],
     "output_agent_messages": [],
     "output_content": [],
-    "Output": ""
+    "Output": "",
+    "llm_provider": "sambanova"
     }
     try:
         app=create_agent()
@@ -685,7 +743,8 @@ def run_agent(input_str:str):
         if browser_manager.is_browser_open():
             browser_manager.close_browser()
     
-# Wrap the execution in a try/finally block
 if __name__ == "__main__":
-    a="Open naukri.com, login with ncharankumareddy@gmail.com/charan#30, search for AI Engineer, extract results."
-    output=run_agent(a)
+    
+   a="Open naukri.com, login with ncharan@gmail.com/pass123, search for AI Engineer, extract results."
+   output=run_agent(a)
+   print(output)

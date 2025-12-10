@@ -45,16 +45,75 @@ An advanced AI-powered agent capable of navigating the web, extracting data, and
    ```
 
 4. **Configure Environment**
-   Create a `.env` file in the root directory with your API keys:
-   ```env
-   # Required for Main Agent Logic
-   GOOGLE_API_KEY=your_google_gemini_api_key
+   Create a `.env` file in the root directory with your API keys.
 
-   # Required for Vision Fallback (if Ollama is not present)
-   GROQ_API_KEY=your_groq_api_key
+   ### For Free Tier Users (Recommended: API Key Rotation)
+   
+   Free tier APIs have limited requests per minute (RPM). To handle rate limits automatically, configure multiple API keys:
+
+   ```env
+   # Gemini Keys (up to 16 keys supported)
+   GOOGLE_API_KEY1=your_gemini_key_1
+   GOOGLE_API_KEY2=your_gemini_key_2
+   GOOGLE_API_KEY3=your_gemini_key_3
+   # ... add more keys as needed
+
+   # Groq Keys (up to 5 keys supported)
+   GROQ_API_KEY1=your_groq_key_1
+   GROQ_API_KEY2=your_groq_key_2
+   # ... add more keys as needed
+
+   # SambaNova Keys (up to 3 keys supported)
+   SAMBANOVA_API_KEY1=your_sambanova_key_1
+   SAMBANOVA_API_KEY2=your_sambanova_key_2
+   # ... add more keys as needed
 
    # Required for Web Search Tool
    TAVILY_API_KEY=your_tavily_api_key
+   ```
+
+   **How it works:**
+   - The agent automatically rotates to the next key when hitting rate limits (429 errors)
+   - You can create multiple free tier API keys from each provider
+   - This effectively multiplies your available requests per minute
+
+   **Important:** In `config.py`, set the total number of keys:
+   ```python
+   _total_gemini_keys = 3    # Number of Gemini keys you added
+   _total_groq_keys = 2      # Number of Groq keys you added
+   _total_sambanova_keys = 2 # Number of SambaNova keys you added
+   ```
+
+   ### For Paid Tier Users (Single API Key)
+   
+   If you have paid API subscriptions with higher rate limits, you can use a single key:
+
+   ```env
+   # Single Gemini key (paid tier)
+   GOOGLE_API_KEY1=your_paid_gemini_key
+
+   # Single Groq key (paid tier)
+   GROQ_API_KEY1=your_paid_groq_key
+
+   # Required for Web Search Tool
+   TAVILY_API_KEY=your_tavily_api_key
+   ```
+
+   **Important:** In `config.py`, set:
+   ```python
+   _total_gemini_keys = 1
+   _total_groq_keys = 1
+   _total_sambanova_keys = 0  # If not using SambaNova
+   ```
+
+   **Optional:** Choose specific provider in your workflow:
+   ```python
+   # In orchestation.py, when calling run_agent()
+   state = {
+       "user_input": "Your task",
+       "llm_provider": "gemini"  # Use only Gemini
+       # Options: "gemini", "groq", "sambanova", "ollama", or None (all)
+   }
    ```
 
 ## ▶️ How to Run

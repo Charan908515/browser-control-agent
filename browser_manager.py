@@ -7,16 +7,15 @@ class BrowserManager:
     
     _instance = None
     _playwright = None
-    _browser: Optional[BrowserContext] = None # Note: This is a Context, not a Browser
+    _browser: Optional[BrowserContext] = None 
     _page: Optional[Page] = None
-    _current_site_name: Optional[str] = None # Tracks the active profile
-    _headless_mode: bool = False # Default to False (Visible)
+    _current_site_name: Optional[str] = None 
+    _headless_mode: bool = False 
 
     def set_headless_mode(self, mode: bool):
         """Sets the headless mode for the NEXT browser launch."""
         self._headless_mode = mode
-        # If behavior needs to change immediately, one might close the browser here,
-        # but usually it's better to apply on next launch to avoid interrupting.
+        
         print(f">>> Headless mode set to: {self._headless_mode}")
     
     def __new__(cls):
@@ -31,17 +30,11 @@ class BrowserManager:
         - If the site_name is different, it closes the old one and opens the new profile.
         """
         try:
-            # Normalize site name for folder usage
             safe_site_name = "".join([c for c in site_name if c.isalnum() or c in ('-','_')]).strip()
             if not safe_site_name: safe_site_name = "default"
-
-            # --- LOGIC: CHECK IF WE NEED TO SWITCH PROFILES ---
-            # If we have a browser open, but it's for a different site, CLOSE IT.
             if self._browser and self._current_site_name != safe_site_name:
                 print(f">>> Switching Context: {self._current_site_name} -> {safe_site_name}")
                 self.close_browser()
-
-            # --- LOGIC: IF BROWSER IS ALREADY GOOD, JUST NAVIGATE ---
             if self._page and not self._page.is_closed():
                 print(f">>> Navigating existing {safe_site_name} session to {url}")
                 try:
@@ -50,8 +43,6 @@ class BrowserManager:
                 except Exception as e:
                     print(f"Navigation failed ({e}), restarting browser...")
                     self.close_browser()
-
-            # --- LOGIC: LAUNCH NEW BROWSER ---
             user_data_dir = os.path.abspath(f"./profiles/{safe_site_name}_profile")
             if not os.path.exists(user_data_dir):
                 os.makedirs(user_data_dir)
@@ -60,8 +51,6 @@ class BrowserManager:
                 self._playwright = sync_playwright().start()
 
             print(f">>> Launching new browser profile: {safe_site_name}")
-            
-            # launch_persistent_context returns a BrowserContext
             self._browser = self._playwright.chromium.launch_persistent_context(
                 user_data_dir=user_data_dir,
                 headless=self._headless_mode,
@@ -86,7 +75,6 @@ class BrowserManager:
     def close_browser(self) -> str:
         """Safe cleanup."""
         try:
-            # Order matters: Page -> Context -> Playwright
             if self._page:
                 try: self._page.close()
                 except: pass

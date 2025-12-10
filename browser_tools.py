@@ -17,14 +17,12 @@ def enable_vision_overlay():
     RETURNS: A summary count. DOES NOT return the full list to save tokens.
     You MUST use `find_element_ids(query)` after this to get specific IDs.
     """
-    #time.sleep(15)
+    
     global SOM_STATE
     page = browser_manager.get_page()
     if not page: return "Error: No page open"
 
     try:
-        # 1. Inject JS to Draw Boxes and Extract Data
-        # FIXED: JavaScript comments use // not #
         elements_data = page.evaluate("""
             () => {
                 document.querySelectorAll('.ai-som-overlay').forEach(el => el.remove());
@@ -91,7 +89,7 @@ def enable_vision_overlay():
             }
         """)
         
-        # 2. Store in Python Memory
+        
         SOM_STATE = elements_data
         
         return f"Success: Overlay enabled. {len(elements_data)} elements indexed in memory. Use 'find_element_ids' to find specific items."
@@ -110,7 +108,7 @@ def find_element_ids(query: str) -> str:
     Returns:
         A list of matching Element IDs and their text.
     """
-    #time.sleep(15)
+
     global SOM_STATE
     if not SOM_STATE:
         return "Error: No elements indexed. Run 'enable_vision_overlay' first."
@@ -118,9 +116,9 @@ def find_element_ids(query: str) -> str:
     query = query.lower().strip()
     matches = []
     
-    # Simple Keyword Matching
+   
     for el in SOM_STATE:
-        # Check text, tag, or ID match
+       
         content = f"{el['tag']} {el['type']} {el['text']}".lower()
         
         if query in content:
@@ -129,7 +127,7 @@ def find_element_ids(query: str) -> str:
     if not matches:
         return f"No elements found matching '{query}'. Try a broader term."
     
-    # Limit results to avoid context overflow (e.g., return top 20)
+    
     return "Matches Found:\n" + "\n".join(matches[:20])
 
 
@@ -191,7 +189,6 @@ def click_id(element_id: int):
     if not page: return "Error: No page open"
     
     try:
-        # Find by the injected attribute
         loc = page.locator(f'[data-ai-id="{element_id}"]').first
         if loc.count() == 0:
             return f"Error: Element ID {element_id} not found. Did you run enable_vision_overlay()?"
@@ -223,7 +220,7 @@ def fill_id(element_id: int, text: str):
     except Exception as e:
         return f"Error filling #{element_id}: {e}"
 
-# --- STANDARD TOOLS (Keep these for scroll/modals) ---
+
 
 @tool
 def scroll_one_screen():
@@ -273,13 +270,13 @@ def get_accessibility_tree() -> str:
             text = ""
             indent = "  " * depth
             
-            # We only care about interactive or text elements
+            
             role = node.get("role", "generic")
             name = node.get("name", "").strip()
             value = node.get("value", "")
             description = node.get("description", "")
             
-            # Create a simplified signature
+            
             if name or value or role in ["button", "link", "textbox", "combobox", "checkbox"]:
                 info = f"{role}"
                 if name: info += f": '{name}'"
@@ -305,7 +302,7 @@ def click_element(selector: str):
     if not page: return "Error: No browser page is open"
     
     try:
-        # 1. Handle Multiple Elements (Strict Mode)
+        
         count = page.locator(selector).count()
         if count > 1:
             print(f"Warning: {count} elements found for '{selector}'. Clicking the first visible one.")
@@ -315,11 +312,11 @@ def click_element(selector: str):
         else:
             locator = page.locator(selector).first
 
-        # 2. Scroll
+        
         locator.scroll_into_view_if_needed()
         page.wait_for_timeout(500)
 
-        # 3. Attempt Click (Standard -> Force)
+        
         try:
             locator.click(timeout=2000)
         except Exception as e:
@@ -340,12 +337,12 @@ def fill_element(selector: str, text: str):
     try:
         locator = page.locator(selector).first
         
-        # 1. Visibility Check
+        
         if not locator.is_visible():
             locator.scroll_into_view_if_needed()
             page.wait_for_timeout(500)
 
-        # 2. Standard Fill Attempt
+        
         try:
             locator.click(force=True, timeout=1000)
             locator.clear()
@@ -354,7 +351,7 @@ def fill_element(selector: str, text: str):
         except Exception:
             print(f"Standard fill failed. Using JS Injection for {selector}...")
 
-        # 3. Nuclear Option: JS Injection (Bypasses React Overlays)
+        
         page.evaluate(f"""
             const el = document.querySelector('{selector}');
             if (el) {{
@@ -364,7 +361,7 @@ def fill_element(selector: str, text: str):
                 el.dispatchEvent(new Event('blur', {{ bubbles: true }}));
             }}
         """)
-        # Trigger Enter just in case
+        
         page.keyboard.press("Enter")
         
         return f"Filled {selector} using JS Injection."
@@ -386,32 +383,31 @@ def select_dropdown_option(option_text: str, dropdown_selector: str = None, opti
         return "Error: No browser page is open"
     
     try:
-        # 1. Wait briefly for animation
+        
         page.wait_for_timeout(500)
         
         target_option = None
 
-        # Strategy A: Precise Selectors (Best)
+        
         if dropdown_selector and option_selector:
-            # Look for option inside the dropdown container
+            
             target_option = page.locator(f"{dropdown_selector} {option_selector}").filter(has_text=option_text).first
             if target_option.count() == 0:
-                # Try alternative: look for spans or divs with the text
+                
                 target_option = page.locator(f"{dropdown_selector} span, {dropdown_selector} div").filter(has_text=option_text).first
         
-        # Strategy B: Text Match (Good fallback)
+        
         elif option_text:
-            # Look for any text element matching the option exactly
+            
             target_option = page.get_by_text(option_text, exact=True).first
             if not target_option.is_visible():
-                 # Try partial match if exact fails
                  target_option = page.get_by_text(option_text, exact=False).first
 
-        # Execute Click
+        
         if target_option and target_option.count() > 0 and target_option.is_visible():
             target_option.scroll_into_view_if_needed()
             page.wait_for_timeout(200)
-            target_option.click(force=True) # Force click handles overlay issues
+            target_option.click(force=True) 
             page.wait_for_timeout(800)
             return f"Selected option: '{option_text}'"
         else:
@@ -439,7 +435,7 @@ def open_dropdown_and_select(dropdown_selector: str, option_text: str, click_to_
         return "Error: No browser page is open"
     
     try:
-        # Step 1: Find and click the dropdown to open it
+        
         dropdown_trigger = page.locator(dropdown_selector).first
         
         if not dropdown_trigger.is_visible():
@@ -450,22 +446,21 @@ def open_dropdown_and_select(dropdown_selector: str, option_text: str, click_to_
             dropdown_trigger.click(force=True)
             page.wait_for_timeout(1000)  # Wait for dropdown animation
         
-        # Step 2: Find the option in the dropdown menu
-        # Try multiple strategies to find the option
+        
         option_element = None
         
-        # Strategy 1: Look for element with exact text
+        
         option_element = page.get_by_text(option_text, exact=True).first
         
-        # Strategy 2: Look for partial match if exact failed
+        
         if option_element.count() == 0:
             option_element = page.get_by_text(option_text, exact=False).first
         
-        # Strategy 3: Look for spans/divs/options containing the text
+        
         if option_element.count() == 0:
             option_element = page.locator(f"span:has-text('{option_text}'), div:has-text('{option_text}'), option:has-text('{option_text}')").first
         
-        # Step 3: Verify the option is visible and click it
+        
         if option_element.count() > 0 and option_element.is_visible():
             option_element.scroll_into_view_if_needed()
             page.wait_for_timeout(200)
@@ -502,7 +497,7 @@ def select_native_select_option(select_selector: str, option_value: str):
             select_element.scroll_into_view_if_needed()
             page.wait_for_timeout(300)
         
-        # Use Playwright's select_option for native selects
+     
         select_element.select_option(option_value)
         page.wait_for_timeout(800)
         
@@ -666,23 +661,23 @@ def hover_element(selector: str, wait_time: int = 1500):
     try:
         element = page.locator(selector).first
         
-        # Check if element exists
+        
         if element.count() == 0:
             return f"Error: Element not found with selector: {selector}"
         
-        # Scroll element into view if needed
+    
         if not element.is_visible():
             element.scroll_into_view_if_needed()
             page.wait_for_timeout(300)
         
-        # Check visibility after scroll
+        
         if not element.is_visible():
             return f"Error: Element with selector '{selector}' exists but is not visible"
         
-        # Perform hover action
+        
         element.hover(force=True)
         
-        # Wait for tooltip/help text to appear (animations, etc.)
+        
         page.wait_for_timeout(wait_time)
         
         return f"Successfully hovered over element: {selector}. Tooltip/help text should now be visible."

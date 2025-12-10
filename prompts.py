@@ -837,14 +837,14 @@ If you see a **Popup, Cookie Banner, or Overlay**:
 ### 🚫 CRITICAL RULES
 1. **ONE STEP ONLY:** Do not try to do the whole plan. Do exactly what is asked.
 2. **NO GUESSING:** Do not guess IDs. You must find them first.
-3. **FAIL SAFE:** If you cannot find an element after checking, stop and report the error.
-4.** If you fail to perform the task then give output like this 'error':'the error'
+3. **FAIL SAFE:** If you cannot find an element after checking, stop and report the error like this 'error':'the error'
+
 ### IMPORTANT
 IN CASE OF LOGIN ,REGISTRATION OR ANY OTHER FORM FILLING ,ALWAYS FILL ALL FIELDS GIVEN IN THE INSTRUCTION AND THEN SUBMIT
 """
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_message),
-        MessagesPlaceholder(variable_name="chat_history"), # Kept for structure, but we will pass empty list in code
+        MessagesPlaceholder(variable_name="chat_history"),
         ("human", "{input}"),
         MessagesPlaceholder(variable_name="agent_scratchpad"),
     ])

@@ -113,6 +113,7 @@ def central_agent1(state):
     if not site_names:
         historical_errors = "No previous errors"
     else:
+        vector_db = get_vector_db()
         historical_errors = retrieve_errors(state) if vector_db else "No previous errors"
     historical_errors = historical_errors.replace("{", "{{").replace("}", "}}")
 
@@ -282,22 +283,25 @@ THE CURRENT PAGE STATE IS:
                 new_steps = []
 
             
-            if state.get("last_error") and vector_db and len(new_steps) > 0:
-                try:
-                    url, site_name = get_current_browser_info()
-                    fix_action = new_steps[0].get('query', 'Unknown Action')
-                    rag_content = f"Error Encountered: {state.get('last_error')}\\nSuccessful Fix/Next Step: {fix_action}"
-                    doc = Document(
+            
+            if state.get("last_error") and len(new_steps) > 0:
+                vector_db = get_vector_db()
+                if vector_db:
+                    try:
+                        url, site_name = get_current_browser_info()
+                        fix_action = new_steps[0].get('query', 'Unknown Action')
+                        rag_content = f"Error Encountered: {state.get('last_error')}\\nSuccessful Fix/Next Step: {fix_action}"
+                        doc = Document(
                         page_content=rag_content,
                         metadata={
                             "url": url, "site_name": site_name,
                             "type": "error_resolution", "related_step_index": current_index
                         }
                     )
-                    vector_db.add_documents([doc])
-                    print(f">>> SAVED ERROR & SOLUTION TO RAG")
-                except Exception as e:
-                    print(f"RAG Save Failed: {e}")
+                        vector_db.add_documents([doc])
+                        print(f">>> SAVED ERROR & SOLUTION TO RAG")
+                    except Exception as e:
+                        print(f"RAG Save Failed: {e}")
 
         
             final_plan = completed_steps + new_steps
@@ -595,16 +599,31 @@ def output_formatting_agent(state):
     )
 
 
-try:
-    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-    vector_db = Chroma(
-        persist_directory="./rag_data", 
-        embedding_function=embeddings,
-        collection_name="agent_memories"
-    )
-except Exception as e:
-    print(f"Error loading vector database: {str(e)}")
-    vector_db = None
+# Lazy loading to avoid startup overhead
+_vector_db_instance = None
+
+def get_vector_db():
+    """
+    Lazy load the vector database only when needed.
+    This eliminates the startup delay from loading HuggingFaceEmbeddings and Chroma.
+    """
+    global _vector_db_instance
+    
+    if _vector_db_instance is None:
+        try:
+            print(">>> Initializing vector database (first use only)...")
+            embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+            _vector_db_instance = Chroma(
+                persist_directory="./rag_data", 
+                embedding_function=embeddings,
+                collection_name="agent_memories"
+            )
+            print(">>> Vector database initialized successfully.")
+        except Exception as e:
+            print(f"Error loading vector database: {str(e)}")
+            _vector_db_instance = None
+    
+    return _vector_db_instance
 
 
 def rag(state):
@@ -635,7 +654,9 @@ def rag(state):
             "agent": agent
         }
     )
-    vector_db.add_documents([doc])
+    vector_db = get_vector_db()
+    if vector_db:
+        vector_db.add_documents([doc])
     
     
     return Command(
@@ -648,6 +669,10 @@ def retrieve_errors(state):
     current_sites = state.get("site_names", [])
     if not current_sites:
         return "No specific sites identified yet."
+
+    vector_db = get_vector_db()
+    if not vector_db:
+        return "Vector database not available."
 
     combined_errors = "PAST ERRORS/LESSONS:\n"
     found_any = False

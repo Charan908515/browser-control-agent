@@ -3,3 +3,4 @@ profiles
 rag_data
 *.png
 .env
+agent_state*
